@@ -32,3 +32,18 @@ TLS is only one possible cause of a post-login error. The new message is needed
 to identify whether it is the cause on your machine. Live EKPA access was not
 used to validate this fix; tests reproduce a certificate error at the same
 request boundary and confirm that session details are not exposed.
+
+# Courses found but zero quiz/test activities
+
+Quiz-index links may be relative to /mod/quiz/ (for example view.php?id=557503).
+Discovery now resolves them against the actual page URL, honors same-site base
+URLs, and accepts teacher report links as quiz activity references. If the
+index has no matches, the scanner also checks the course's main page. It prints
+per-course counts and treats zero matches across nonempty courses as an error,
+rather than claiming a successful export.
+
+The relative-link case is regression-tested but has not been verified against
+your authenticated page. If it still finds no quizzes, supply the main-content
+HTML from one printed quiz index URL, removing any session keys. A site-specific
+course format may require a different adapter; course-page fallback by itself
+cannot prove that lazily loaded or separately paged sections were all scanned.

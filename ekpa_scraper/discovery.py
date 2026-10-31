@@ -25,26 +25,37 @@ def courses_from_response(payload):
     raise MoodleLayoutError('My Courses service response contains no course list.')
 
 
-def parse_course_quizzes(html, course):
+def parse_course_quizzes(html, course, page_url=None):
     soup = BeautifulSoup(html, 'html.parser')
     region = soup.select_one('#region-main') or soup.select_one('main')
     if region is None:
         raise MoodleLayoutError('Course quiz index main content is missing.')
     if region.select_one('.alert-danger, .errorbox, [data-rel="fatalerror"]'):
         raise MoodleLayoutError('Course quiz index reported a Moodle error.')
+    # A bare view.php link is relative to /mod/quiz/, not to the site root.
+    base = page_url or ORIGIN + '/mod/quiz/index.php?id=' + str(course['id'])
+    base_tag = soup.select_one('base[href]')
+    if base_tag:
+        candidate = urljoin(base, base_tag['href'])
+        if urlsplit(candidate).netloc == urlsplit(ORIGIN).netloc:
+            base = candidate
     result = {}
     for anchor in region.select('a[href]'):
-        url = urljoin(ORIGIN, anchor['href'])
+        url = urljoin(base, anchor['href'])
         parts = urlsplit(url)
         ids = parse_qs(parts.query).get('id', [])
         if (parts.scheme == 'https' and parts.netloc == urlsplit(ORIGIN).netloc
-                and parts.path == '/mod/quiz/view.php' and len(ids) == 1 and ids[0].isdigit()):
+                and parts.path in ('/mod/quiz/view.php', '/mod/quiz/report.php')
+                and len(ids) == 1 and ids[0].isdigit()):
             url = ORIGIN + '/mod/quiz/view.php?id=' + ids[0]
-            title = ' '.join(anchor.get_text(' ', strip=True).split())
-            if title:
-                result[url] = Lesson(course['fullname'], title, url, 0, 0,
-                                     ORIGIN + '/course/view.php?id=' + str(course['id']))
+            name = anchor.select_one('.instancename') or anchor
+            title = ' '.join(name.get_text(' ', strip=True).split())
+            title = title or anchor.get('aria-label') or anchor.get('title') or 'Quiz ' + ids[0]
+            # Report icons can duplicate the activity link. Keep the first name.
+            result.setdefault(url, Lesson(course['fullname'], title, url, 0, 0,
+                                          ORIGIN + '/course/view.php?id=' + str(course['id'])))
     return list(result.values())
+
 
 
 def enrolled_courses(page):
@@ -141,15 +152,32 @@ def discover_all_lessons(page):
     lessons = {}
     for course in courses:
         print(f'  Scanning course: {course["fullname"]}')
+        index_url = ORIGIN + '/mod/quiz/index.php?id=' + str(course['id'])
         try:
-            response = page.goto(ORIGIN + '/mod/quiz/index.php?id=' + str(course['id']),
-                                 wait_until='domcontentloaded', timeout=45000)
+            response = page.goto(index_url, wait_until='domcontentloaded', timeout=45000)
         except Exception as exc:
             raise MoodleLayoutError('Opening the course quiz index failed: ' + request_error_hint(exc)) from None
         ensure_logged_in(page)
         if response and response.status >= 400:
             raise MoodleLayoutError('Course quiz index is inaccessible; complete discovery stopped.')
-        for lesson in parse_course_quizzes(page.content(), course):
+        found = parse_course_quizzes(page.content(), course, page_url=page.url)
+        print(f'    Quiz index matched {len(found)} activities (course {course["id"]}).')
+        if not found:
+            # Some course formats expose activity links only on the course page.
+            course_url = ORIGIN + '/course/view.php?id=' + str(course['id'])
+            print(f'    Checking course page: {course_url}')
+            try:
+                response = page.goto(course_url, wait_until='domcontentloaded', timeout=45000)
+            except Exception as exc:
+                raise MoodleLayoutError('Opening the course page failed: ' + request_error_hint(exc)) from None
+            ensure_logged_in(page)
+            if response and response.status >= 400:
+                raise MoodleLayoutError('Course page is inaccessible; complete discovery stopped.')
+            found = parse_course_quizzes(page.content(), course, page_url=page.url)
+            print(f'    Course page matched {len(found)} activities.')
+        for lesson in found:
             lessons[lesson.url] = lesson
     print(f'Quiz/test activities discovered: {len(lessons)}')
+    if courses and not lessons:
+        raise MoodleLayoutError('Courses were found, but no quiz/test links matched on their quiz indexes or course pages. No successful export was claimed. Supply the main-content HTML from one course quiz index (/mod/quiz/index.php?id=COURSE_ID) to inspect this site layout.')
     return list(lessons.values())
