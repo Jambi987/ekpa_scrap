@@ -7,7 +7,7 @@ from .moodle import ORIGIN, LOGIN_URL, SELECTORS
 def authenticated_page(record, selectors=SELECTORS):
     from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
+        browser = pw.chromium.launch(headless=True)
         context = browser.new_context(accept_downloads=False)
         try:
             page = context.new_page()
