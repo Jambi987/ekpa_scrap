@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from .dashboard import Lesson
 from .grading import ensure_logged_in
 from .moodle import ORIGIN, MoodleLayoutError
+from .errors import request_error_hint
 
 
 def courses_from_response(payload):
@@ -62,12 +63,17 @@ def enrolled_courses(page):
             pass
     page.on('response', capture)
     try:
+        print('Opening My Courses...')
         page.goto(ORIGIN + '/my/courses.php', wait_until='domcontentloaded', timeout=45000)
         ensure_logged_in(page)
         for _ in range(60):
             if captured:
                 break
             page.wait_for_timeout(250)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise MoodleLayoutError('Opening My Courses failed: ' + request_error_hint(exc)) from None
     finally:
         page.remove_listener('response', capture)
     if not captured:
@@ -85,11 +91,19 @@ def enrolled_courses(page):
             # Remove a UI text search so discovery is not restricted by a saved filter.
             if 'searchvalue' in request['args']:
                 request['args']['searchvalue'] = ''
-            response = page.context.request.post(endpoint, data=[request], timeout=45000)
+            print(f'Reading enrolled courses ({classification}, offset {offset})...')
+            try:
+                response = page.context.request.post(endpoint, data=[request], timeout=45000)
+            except Exception as exc:
+                raise MoodleLayoutError('Retrieving enrolled courses failed: ' + request_error_hint(exc)) from None
             try:
                 if not response.ok:
-                    raise MoodleLayoutError('Could not retrieve the enrolled-course list.')
-                data = courses_from_response(response.json())
+                    raise MoodleLayoutError(f'Course listing returned HTTP {response.status}.')
+                try:
+                    payload = response.json()
+                except Exception as exc:
+                    raise MoodleLayoutError('Reading the course-list response failed: ' + request_error_hint(exc)) from None
+                data = courses_from_response(payload)
             finally:
                 response.dispose()
             courses = data['courses']
@@ -127,8 +141,11 @@ def discover_all_lessons(page):
     lessons = {}
     for course in courses:
         print(f'  Scanning course: {course["fullname"]}')
-        response = page.goto(ORIGIN + '/mod/quiz/index.php?id=' + str(course['id']),
-                             wait_until='domcontentloaded', timeout=45000)
+        try:
+            response = page.goto(ORIGIN + '/mod/quiz/index.php?id=' + str(course['id']),
+                                 wait_until='domcontentloaded', timeout=45000)
+        except Exception as exc:
+            raise MoodleLayoutError('Opening the course quiz index failed: ' + request_error_hint(exc)) from None
         ensure_logged_in(page)
         if response and response.status >= 400:
             raise MoodleLayoutError('Course quiz index is inaccessible; complete discovery stopped.')

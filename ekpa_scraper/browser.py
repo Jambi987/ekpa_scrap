@@ -1,11 +1,17 @@
 """Authenticated browser lifecycle. Each invocation creates an isolated context."""
 from contextlib import contextmanager
+import os
+import sys
 from urllib.parse import urlsplit
 from .moodle import ORIGIN, LOGIN_URL, SELECTORS
 
 @contextmanager
 def authenticated_page(record, selectors=SELECTORS):
     from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
+    # The browser uses Windows trust, but the bundled Node request client may
+    # otherwise use only its built-in CA list. Honor explicit user settings.
+    if sys.platform == 'win32':
+        os.environ.setdefault('NODE_USE_SYSTEM_CA', '1')
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         context = browser.new_context(accept_downloads=False)
