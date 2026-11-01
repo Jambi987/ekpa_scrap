@@ -2,6 +2,8 @@
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 import re
+import json
+from datetime import datetime, timezone
 import stat
 from urllib.parse import urljoin, urlsplit
 import zipfile
@@ -67,14 +69,51 @@ def extract_zip(path, student_dir):
                 save_bytes(target, archive.read(item))
 
 
+def download_event(student_dir, status, **fields):
+    root = Path(student_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / 'download_history.jsonl').open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps(dict(time_utc=datetime.now(timezone.utc).isoformat(),
+                                     status=status, **fields), ensure_ascii=False) + '\n')
+
+
+def cached_upload(student_dir, key):
+    root = Path(student_dir)
+    history = root / 'download_history.jsonl'
+    record = None
+    if history.exists():
+        for line in history.read_text(encoding='utf-8').splitlines():
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue  # An interrupted final log write is not completion.
+            if item.get('key') == key and item.get('status') == 'complete':
+                record = item
+    if record:
+        path = root / record['file']
+        if (path.parent.resolve() == root.resolve() and not path.is_symlink()
+                and path.is_file() and sha256(path.read_bytes()).hexdigest() == record['sha256']):
+            return record, path
+    return None, None
+
+
 def download_upload(context, upload, student_dir):
     url = upload.url
     data = None
+    key = sha256(upload.url.encode('utf-8')).hexdigest()
+    cached, cached_path = cached_upload(student_dir, key)
+    headers = {}
+    if cached:
+        if cached.get('etag'):
+            headers['If-None-Match'] = cached['etag']
+        elif cached.get('last_modified'):
+            headers['If-Modified-Since'] = cached['last_modified']
+    response_headers = {}
     for _ in range(6):
         parts = urlsplit(url)
         if parts.scheme != 'https' or parts.netloc != urlsplit(ORIGIN).netloc:
             raise ValueError('Unexpected attachment download origin.')
-        response = context.request.get(url, max_redirects=0, timeout=60000)
+        response = context.request.get(url, headers=headers, max_redirects=0, timeout=60000)
         try:
             if response.status in (301, 302, 303, 307, 308):
                 location = response.headers.get('location')
@@ -82,11 +121,20 @@ def download_upload(context, upload, student_dir):
                     raise ValueError('Attachment redirect has no location.')
                 url = urljoin(url, location)
                 continue
+            if response.status == 304:
+                if not cached_path or not headers:
+                    raise ValueError('Attachment returned 304 without a verified local copy.')
+                # Re-extract to restore missing files without fetching the archive.
+                if zipfile.is_zipfile(cached_path):
+                    extract_zip(cached_path, student_dir)
+                download_event(student_dir, 'reused', key=key, file=cached_path.name)
+                return cached_path
             if not response.ok:
                 raise ValueError(f'Attachment download returned HTTP {response.status}.')
             length = response.headers.get('content-length', '0')
             if length.isdigit() and int(length) > MAX_FILE:
                 raise ValueError('Attachment exceeds the 100 MiB download limit.')
+            response_headers = response.headers
             data = response.body()
             if len(data) > MAX_FILE:
                 raise ValueError('Attachment exceeds the 100 MiB download limit.')
@@ -105,4 +153,7 @@ def download_upload(context, upload, student_dir):
         extract_zip(path, student_dir)
     elif path.suffix.lower() == '.zip':
         raise ValueError('Downloaded .zip is not a valid ZIP archive; original file retained.')
+    download_event(student_dir, 'complete', key=key, file=path.name,
+                   sha256=sha256(data).hexdigest(), etag=response_headers.get('etag', ''),
+                   last_modified=response_headers.get('last-modified', ''))
     return path

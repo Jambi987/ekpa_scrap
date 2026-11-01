@@ -284,3 +284,20 @@ from successful local bookkeeping. The 70 offline tests cover graded-zero
 skips, graded reports with blank marks, concurrent grading, blocked CSV writes,
 unchanged probe bytes, and remote-success/local-permission-failure reporting.
 The native Windows file-sharing probe still needs validation on Windows.
+
+
+Download resume tracking: each student folder contains `download_history.jsonl`.
+Completed files are recorded with a SHA-256 checksum and HTTP validators. Reruns
+still scan Moodle for new submissions and grading status. When the server supports
+ETag or Last-Modified validation, unchanged files reuse verified local bytes;
+otherwise the file is fetched and compared to avoid missing remote changes.
+Missing or damaged local attachments are fetched again. ZIP extraction also runs
+on reused archives to restore missing contents. Attachment failures are logged and
+remaining attachments continue; the command reports incomplete work at the end.
+Changed files keep their existing content-versioned filenames. Existing files
+from older runs gain tracking records on their next successful download.
+
+Only edit `students.csv`, in its `grade` and optional `notes` columns.
+`students.before_sync.csv` is a one-time recovery snapshot created before the first
+replacement of an existing CSV; it may contain only the first student. It is not a
+current backup and is never used for uploads. Save and close Excel before running.

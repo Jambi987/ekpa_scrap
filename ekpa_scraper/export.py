@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit, urlencode
-from .files import download_upload, filename
+from .files import download_upload, filename, download_event
 from .grading import pending_questions_for_lesson, ensure_logged_in, ordered_report_url, validate_report_order
 from .moodle import SELECTORS
 from .storage import lesson_folder, entity_folder
@@ -70,6 +70,7 @@ def page_key(url):
 
 def _export_batch(page, lessons, output, account, selectors=SELECTORS):
     students = files = 0
+    failed_files = 0
     seen_lessons = set()
     for lesson in lessons:
         if lesson.url in seen_lessons:
@@ -123,7 +124,14 @@ def _export_batch(page, lessons, output, account, selectors=SELECTORS):
                         if not submission.uploads:
                             print(f'  {submission.student_name}: no uploaded attachment found.')
                         for upload in submission.uploads:
-                            saved = download_upload(page.context, upload, folder)
+                            try:
+                                saved = download_upload(page.context, upload, folder)
+                            except Exception as exc:
+                                failed_files += 1
+                                download_event(folder, 'failed', file=filename(upload.filename),
+                                               error_type=type(exc).__name__)
+                                print(f'  {submission.student_name}: attachment failed ({type(exc).__name__}); continuing.')
+                                continue
                             files += 1
                             print(f'  {submission.student_name}: saved or already present: {saved.name}')
                     queue.extend(next_pages(html, tab.url, selectors))
@@ -134,6 +142,8 @@ def _export_batch(page, lessons, output, account, selectors=SELECTORS):
                 raise
             else:
                 tab.close()
+    if failed_files:
+        raise ValueError(f'{failed_files} attachments failed; rerun download to retry. See student download_history.jsonl files.')
     print(f'\nProcessed {students} student responses and {files} attachments (including unchanged files).')
     print('Exercise text and student CSV saved. No Moodle grades were submitted.')
 

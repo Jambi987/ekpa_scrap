@@ -46,3 +46,6 @@ students.before_sync.csv
 exercise.txt
 students_*.tmp
 *.log
+
+# Download completion and retry records
+download_history.jsonl
