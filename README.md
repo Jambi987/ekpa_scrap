@@ -143,7 +143,7 @@ Cookies, credentials, screenshots and page HTML are not saved as output files.
 python -m unittest discover -s tests -v
 ```
 
-61 local tests pass, covering pending/all links, saved lessons, Greek decimal
+70 local tests pass, covering pending/all links, saved lessons, Greek decimal
 marks, zero grades, CSV migration and notes preservation, duplicates, ZIP
 traversal, and file versions. Authenticated execution must be tested locally.
 
@@ -161,7 +161,8 @@ marks, not percentages or the quiz's final total. Decimal comma and decimal
 point are supported. Grade 0 is valid. Leave a field empty to leave its Moodle
 value untouched. A nonempty note replaces that response's teacher feedback.
 The command does not append feedback or clear existing feedback for blank CSV
-notes. The moodle_grade column is a sync snapshot, not the upload input.
+notes. Already graded Moodle responses are always skipped, including grade 0;
+neither their marks nor feedback are changed. The moodle_grade column is a sync snapshot, not the upload input.
 
 Preview (no grading forms submitted):
 
@@ -186,9 +187,10 @@ one response per page in stable lastname order, following Moodle-rendered
 pagination links rather than calculating subsequent page numbers from totals. Submission IDs from
 students_index.jsonl determine identity; display names are also cross-checked.
 Unique names can be matched if CSV rows were sorted. Keep the order of rows
-with identical names. Missing submissions, invalid grades, changed remote
-scores since last sync, and ambiguous Save controls stop preflight before any
-submission. The preview lists the old/new grades and notes. Existing unchanged
+with identical names. Missing submissions, invalid grades for ungraded responses, and ambiguous Save
+controls stop preflight before any submission. Already graded responses are
+skipped using the explicit manuallygraded report and current mark fields,
+not the potentially stale CSV status. The preview lists the old/new grades and notes. Existing unchanged
 responses are skipped.
 
 All proposed changes are checked before applying. Apply then reloads each
@@ -210,7 +212,7 @@ but verification fails, it is marked unverified_after_submit; inspect Moodle
 before retrying. There are no automatic submission retries or rollback of
 previously verified responses. Successful partial uploads stay saved.
 
-New module: grade_upload.py. The 61 offline tests include grade range and
+New module: grade_upload.py. The 70 offline tests include grade range and
 zero checks, decimal commas, blank-field preservation, remote grade conflicts,
 HTML escaping, unique Save selection, CSV identity mapping, and confirmation
 that preview never calls the apply function. No live grades were changed while
@@ -247,3 +249,38 @@ studentlastname. The previous lastname value was invalid in Moodle 4.5 and
 silently selected random ordering, which suppresses paging. See
 TROUBLESHOOTING.md for source references and the seven-response paging
 regression. The rendered ordering is checked before response processing.
+
+## Already graded responses and PermissionError during upload
+
+The uploader now omits responses already graded in Moodle. This includes a
+numeric zero and any response found in Moodle's manuallygraded report even
+when the mark field is blank. Skipping applies to both marks and feedback.
+Graded status is checked again at apply time; if another instructor has graded
+the response after preflight, it is skipped rather than changed. Downloads
+still include graded responses in the CSV; only upload omits them.
+
+Close students.csv in Excel before --apply. Before the first Moodle save, the
+uploader checks every affected CSV for read/write access and probes its folder
+for temporary-file creation/removal. On Windows it also requests DELETE access
+without deleting the file, to detect the sharing lock that blocks atomic CSV
+replacement. These are preflight checks, not a guarantee against a lock being
+acquired later. Audit-file locks report the audit path explicitly as well.
+
+The older generic PermissionError did not identify the failing file. Excel
+locking is a likely cause, but that old output alone does not establish whether
+a Moodle save occurred first. The new workflow records these stages:
+
+- local_write_check_failed: no new Moodle save started in this apply run.
+- moodle_verified: remote mark/feedback was saved and read back successfully.
+- moodle_verified_csv_sync_failed: Moodle save was confirmed but the local CSV
+  could not be synchronized; do not interpret this as an unsuccessful save.
+- unverified_after_submit: a save was attempted but remote readback failed.
+- already_graded_skipped / already_graded_skipped_at_apply: no mark or feedback
+  was submitted for that response.
+
+A subsequent run skips grades already saved, including one that saved before a
+local CSV error. The audit log and terminal distinguish remote verification
+from successful local bookkeeping. The 70 offline tests cover graded-zero
+skips, graded reports with blank marks, concurrent grading, blocked CSV writes,
+unchanged probe bytes, and remote-success/local-permission-failure reporting.
+The native Windows file-sharing probe still needs validation on Windows.

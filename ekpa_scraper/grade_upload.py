@@ -1,5 +1,5 @@
 """Preview and apply local CSV grades/notes through Moodle's normal grading form."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from html import escape
@@ -12,6 +12,7 @@ from .grading import pending_questions_for_lesson, ensure_logged_in, normalized,
 from .moodle import ORIGIN, SELECTORS, MoodleLayoutError
 from .storage import merge_known_lessons, output_path, lesson_folder
 from .submissions import parse_submissions, next_pages
+from .upload_io import check_upload_writes, csv_access_message
 
 @dataclass(frozen=True)
 class Edit:
@@ -68,7 +69,10 @@ def read_edits(root, diagnostics=None):
         if not index_path.exists():
             raise ValueError(f'Missing student index beside {csv_path.name}; cannot safely identify responses.')
         index = [json.loads(line) for line in index_path.read_text(encoding='utf-8').splitlines() if line.strip()]
-        rows = read_rows(csv_path)
+        try:
+            rows = read_rows(csv_path)
+        except PermissionError:
+            raise ValueError(csv_access_message(csv_path)) from None
         if len(index) != len(rows):
             raise ValueError('CSV and student index row counts differ; no grade upload started.')
         file_report = {'csv': str(csv_path.relative_to(root)), 'rows': len(rows), 'candidate_rows': 0, 'blank_rows': 0}
@@ -123,34 +127,39 @@ def snapshot(page, submission_key, selectors=SELECTORS):
     return submission, current_grade, plain_notes(comment.input_value()), minimum, ceiling
 
 
+
+def is_graded(submission, current_grade):
+    return bool(current_grade.strip()) or submission.moodle_status == 'graded'
+
 def make_change(edit, lesson_title, url, submission, old_grade, old_notes, minimum, maximum):
     if submission.student_name != edit.student_name:
         raise ValueError('CSV student name does not match the live response; nothing was submitted.')
+    if is_graded(submission, old_grade):
+        return Change(edit, lesson_title, url, old_grade, old_notes, old_grade, old_notes, False, False)
     update_grade = bool(edit.grade) and (not old_grade or number(edit.grade) != number(old_grade))
     update_notes = bool(edit.notes) and plain_notes(notes_html(edit.notes)) != old_notes
     if edit.grade and not minimum <= number(edit.grade) <= maximum:
         raise ValueError(f'Grade for {edit.student_name} is outside the allowed range {minimum} to {maximum}.')
-    if (update_grade and edit.last_moodle_grade and old_grade
-            and number(edit.last_moodle_grade) != number(old_grade)):
-        raise ValueError(f'Moodle grade changed since the last CSV sync for {edit.student_name}. Download current data and review the CSV first.')
     return Change(edit, lesson_title, url, old_grade, old_notes,
                   str(number(edit.grade)) if edit.grade else old_grade,
                   edit.notes if edit.notes else old_notes, update_grade, update_notes)
 
 
-def response_url(url, page_number, selectors=SELECTORS):
+def response_url(url, page_number, selectors=SELECTORS, grade_filter='all'):
     parts = urlsplit(url)
     args = parse_qs(parts.query)
-    args.update(grade=['all'])
+    if grade_filter not in ('all', 'manuallygraded'):
+        raise ValueError('Unsupported upload report filter.')
+    args.update(grade=[grade_filter])
     all_url = parts._replace(query=urlencode([(k, v) for k, values in args.items() for v in values])).geturl()
     return ordered_report_url(all_url, pagesize=1, page=page_number, selectors=selectors)
 
 
 
-def response_pages(page, question, root, selectors=SELECTORS):
+def response_pages(page, question, root, selectors=SELECTORS, grade_filter='all'):
     """Follow rendered Moodle paging links; never infer page indexes from totals."""
     from .export import page_key
-    queue = [response_url(question.url, 0, selectors)]
+    queue = [response_url(question.url, 0, selectors, grade_filter=grade_filter)]
     visited = set()
     while queue:
         requested = queue.pop(0)
@@ -193,6 +202,7 @@ def build_plan(page, output, account, lesson_id=None, selectors=SELECTORS):
     print(f'Saved lessons in upload scope: {len(lessons)}')
     log_event(root, {'status': 'lesson_scope', 'saved_lessons': len(lessons), 'lesson_id': lesson_id})
     plan = []
+    skipped_graded = 0
     remaining = set()
     for lesson in lessons:
         folder = lesson_folder(output, account, lesson)
@@ -214,6 +224,24 @@ def build_plan(page, output, account, lesson_id=None, selectors=SELECTORS):
                 continue
             if question.expected_responses is None or question.expected_responses > 10000:
                 raise ValueError('Cannot determine a bounded complete response list for grade upload.')
+            # The explicit manuallygraded report establishes graded status even
+            # if Moodle does not expose the existing numeric mark in the form.
+            if question.graded_url:
+                graded_question = replace(question, url=question.graded_url)
+                for _, graded_rows in response_pages(page, graded_question, root, selectors, grade_filter='manuallygraded'):
+                    for graded in graded_rows:
+                        if graded.key not in targets:
+                            continue
+                        edit = targets.pop(graded.key)
+                        remaining.discard((edit.csv_path, edit.submission_key))
+                        skipped_graded += 1
+                        log_event(root, {'status': 'already_graded_skipped', 'submission_key': graded.key,
+                                         'csv': str(edit.csv_path.relative_to(root)), 'csv_row': edit.row_index + 2})
+                        print(f'  Skipped already graded: {edit.student_name}')
+                    if not targets:
+                        break
+            if not targets:
+                continue
             seen = set()
             for url, submissions in response_pages(page, question, root, selectors):
                 if len(submissions) != 1:
@@ -228,6 +256,13 @@ def build_plan(page, output, account, lesson_id=None, selectors=SELECTORS):
                     continue
                 edit = targets.pop(submission.key)
                 state = snapshot(page, edit.submission_key, selectors)
+                if is_graded(state[0], state[1]):
+                    skipped_graded += 1
+                    remaining.discard((edit.csv_path, edit.submission_key))
+                    log_event(root, {'status': 'already_graded_skipped', 'submission_key': edit.submission_key,
+                                     'csv': str(edit.csv_path.relative_to(root)), 'csv_row': edit.row_index + 2})
+                    print(f'  Skipped already graded: {edit.student_name}')
+                    continue
                 change = make_change(edit, lesson.title, url, *state)
                 remaining.discard((edit.csv_path, edit.submission_key))
                 if not change.update_grade and not change.update_notes:
@@ -248,6 +283,8 @@ def build_plan(page, output, account, lesson_id=None, selectors=SELECTORS):
                    if edit.csv_path.is_relative_to(lesson_folder(output, account, lesson))}
         if any(edit.csv_path not in matched for edit in all_edits):
             raise ValueError('Some CSVs have no saved lesson URL. Run download before uploading.')
+    print(f'Already graded responses skipped: {skipped_graded}')
+    log_event(root, {'status': 'graded_skip_summary', 'skipped_responses': skipped_graded})
     if remaining:
         raise ValueError(f'{len(remaining)} CSV responses were not found in Moodle. No grades were submitted.')
     return plan
@@ -285,9 +322,13 @@ def grading_controls(question, url):
     return form, buttons, save_button_index(descriptors)
 
 def log_event(root, event):
-    root.mkdir(parents=True, exist_ok=True)
-    with (root / 'grade_upload_log.jsonl').open('a', encoding='utf-8') as stream:
-        stream.write(json.dumps({'time_utc': datetime.now(timezone.utc).isoformat(), **event}, ensure_ascii=False) + '\n')
+    path = root / 'grade_upload_log.jsonl'
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        with path.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({'time_utc': datetime.now(timezone.utc).isoformat(), **event}, ensure_ascii=False) + '\n')
+    except PermissionError:
+        raise ValueError(f'Cannot append audit log: {path}. Close programs holding this file and check folder write permissions. If a save was already verified, inspect Moodle before retrying.') from None
 
 
 def apply_change(page, change, root, selectors=SELECTORS):
@@ -296,10 +337,18 @@ def apply_change(page, change, root, selectors=SELECTORS):
     ensure_logged_in(page, selectors)
     page.locator(selectors.submission).first.wait_for(state='attached', timeout=30000)
     submission, current_grade, current_notes, minimum, maximum = snapshot(page, edit.submission_key, selectors)
+    if is_graded(submission, current_grade):
+        log_event(root, {'status': 'already_graded_skipped_at_apply', 'submission_key': edit.submission_key,
+                         'student_name': edit.student_name})
+        print(f'Skipped response graded since preflight: {edit.student_name}')
+        return False
     if current_grade != change.old_grade or current_notes != change.old_notes:
         raise ValueError('Moodle changed after preview. Nothing was submitted for this response; rerun preview.')
     make_change(edit, change.lesson_title, change.url, submission, current_grade, current_notes, minimum, maximum)
-    rows = read_rows(edit.csv_path)
+    try:
+        rows = read_rows(edit.csv_path)
+    except PermissionError:
+        raise ValueError(csv_access_message(edit.csv_path)) from None
     if (rows[edit.row_index]['student_name'], rows[edit.row_index]['grade'].strip(), rows[edit.row_index]['notes'].strip()) != (edit.student_name, edit.grade, edit.notes):
         raise ValueError('CSV changed during upload; rerun the command.')
     question = page.locator(selectors.submission).first
@@ -333,12 +382,21 @@ def apply_change(page, change, root, selectors=SELECTORS):
             raise ValueError('Saved grade could not be verified. Inspect Moodle before rerunning apply.')
         if change.update_notes and notes != plain_notes(notes_html(change.new_notes)):
             raise ValueError('Saved note could not be verified. Inspect Moodle before rerunning apply.')
-        rows = read_rows(edit.csv_path)
-        write_rows(edit.csv_path, sync_row(rows, edit.row_index, verified))
-        log_event(root, {'status': 'verified', **event})
     except Exception:
         log_event(root, {'status': 'unverified_after_submit', **event})
         raise
+    print(f'Moodle save verified: {edit.student_name}')
+    log_event(root, {'status': 'moodle_verified', **event})
+    try:
+        rows = read_rows(edit.csv_path)
+        write_rows(edit.csv_path, sync_row(rows, edit.row_index, verified))
+    except Exception as exc:
+        log_event(root, {'status': 'moodle_verified_csv_sync_failed', 'error_type': type(exc).__name__,
+                         'csv': str(edit.csv_path), **event})
+        hint = 'Close the CSV in Excel and check file/folder write permissions.' if isinstance(exc, PermissionError) else 'Check the local CSV and its folder.'
+        raise ValueError(f'Moodle was updated and verified for {edit.student_name}, but local CSV synchronization failed ({type(exc).__name__}): {edit.csv_path}. {hint} The remote save must not be treated as failed.') from None
+    log_event(root, {'status': 'verified', **event})
+    return True
 
 
 def upload_grades(page, output, account, apply=False, lesson_id=None):
@@ -371,7 +429,17 @@ def upload_grades(page, output, account, apply=False, lesson_id=None):
     if not apply:
         print('Preview only. Rerun with --apply to submit these CSV changes.')
         return
+    try:
+        check_upload_writes(plan)
+    except ValueError as exc:
+        log_event(root, {'status': 'local_write_check_failed', 'message': str(exc)})
+        raise
+    log_event(root, {'status': 'local_write_checks_passed', 'csv_files': len({c.edit.csv_path for c in plan})})
+    applied = skipped = 0
     for change in plan:
-        apply_change(page, change, root)
-        print(f'Verified saved response: {change.edit.student_name}')
-    print(f'Applied and verified {len(plan)} response updates.')
+        if apply_change(page, change, root):
+            applied += 1
+            print(f'Verified saved response: {change.edit.student_name}')
+        else:
+            skipped += 1
+    print(f'Applied and verified {applied} response updates; skipped {skipped} newly graded responses.')

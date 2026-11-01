@@ -18,23 +18,23 @@ class GradeUploadTests(unittest.TestCase):
         return make_change(edit,'Lesson','https://lms.elearningekpa.gr/mod/quiz/report.php?id=1',self.submission,grade,notes,Decimal(0),Decimal(20))
     def test_decimal_zero_and_ranges(self):
         self.assertEqual(number('17,5'),Decimal('17.5'))
-        self.assertEqual(self.change(replace(self.edit,grade='0')).new_grade,'0')
+        self.assertEqual(self.change(replace(self.edit,grade='0'),grade='').new_grade,'0')
         for grade in ['21','-1','NaN','Infinity','eighteen']:
             with self.subTest(grade=grade),self.assertRaises(ValueError):
-                self.change(replace(self.edit,grade=grade))
+                self.change(replace(self.edit,grade=grade),grade='')
     def test_blank_grade_and_blank_notes_do_not_erase(self):
         change=self.change(replace(self.edit,grade='',notes=''))
         self.assertFalse(change.update_grade)
         self.assertFalse(change.update_notes)
         self.assertEqual((change.new_grade,change.new_notes),('15','Old note'))
-        note_only=self.change(replace(self.edit,grade='',notes='New note'))
+        note_only=self.change(replace(self.edit,grade='',notes='New note'),grade='')
         self.assertTrue(note_only.update_notes)
         self.assertFalse(note_only.update_grade)
-    def test_identical_values_are_noop_and_conflicts_fail(self):
+    def test_already_graded_is_noop_and_identity_is_checked(self):
         change=self.change(replace(self.edit,grade='15,0',notes='Old note'))
         self.assertFalse(change.update_grade or change.update_notes)
-        with self.assertRaises(ValueError):
-            self.change(self.edit,grade='16')
+        graded=self.change(self.edit,grade='16')
+        self.assertFalse(graded.update_grade or graded.update_notes)
         with self.assertRaises(ValueError):
             self.change(replace(self.edit,student_name='Wrong person'))
     def test_notes_are_plain_text_and_html_escaped(self):
@@ -64,7 +64,7 @@ class GradeUploadTests(unittest.TestCase):
         self.assertIn('slot=11',url)
     def test_preview_never_calls_apply(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with patch('ekpa_scraper.grade_upload.build_plan',return_value=[self.change(self.edit)]), patch('ekpa_scraper.grade_upload.apply_change') as apply:
+            with patch('ekpa_scraper.grade_upload.build_plan',return_value=[self.change(self.edit,grade='')]), patch('ekpa_scraper.grade_upload.apply_change') as apply:
                 upload_grades(object(),tmp,'93',apply=False)
                 apply.assert_not_called()
                 self.assertIn('preview',(Path(tmp)/'93/grade_upload_log.jsonl').read_text())

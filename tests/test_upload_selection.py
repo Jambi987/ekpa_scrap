@@ -34,7 +34,7 @@ class UploadSelectionTests(unittest.TestCase):
             root=Path(tmp)
             register_student(root,item)
             edit,=read_edits(root)
-            change=make_change(edit,'Lesson','https://lms.elearningekpa.gr/mod/quiz/report.php?id=1',item,'','',Decimal(0),Decimal(20))
+            change=make_change(edit,'Lesson','https://lms.elearningekpa.gr/mod/quiz/report.php?id=1',replace(item,moodle_grade='',moodle_status='needs_grading'),'','',Decimal(0),Decimal(20))
             self.assertTrue(change.update_grade)
             self.assertFalse(change.update_notes)
             self.assertEqual(change.new_grade,'18')
