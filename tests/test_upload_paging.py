@@ -35,11 +35,13 @@ class UploadPagingTests(unittest.TestCase):
             self.assertEqual(len(results),2)
             self.assertEqual(results[0][1][0].key,results[1][1][0].key)
             self.assertIn('page_observed',(Path(root)/'grade_upload_log.jsonl').read_text())
-    def test_unchanged_mirrored_grades_are_not_edits(self):
+    def test_downloaded_grades_are_live_check_candidates(self):
         submission=replace(parse_submissions(HTML)[0],moodle_grade='18',moodle_status='graded')
         with tempfile.TemporaryDirectory() as root:
             register_student(Path(root),submission)
-            self.assertEqual(read_edits(Path(root)),[])
+            edits = read_edits(Path(root))
+            self.assertEqual(len(edits), 1)
+            self.assertEqual(edits[0].grade, '18')
     def test_preflight_failure_always_creates_audit_log(self):
         with tempfile.TemporaryDirectory() as root:
             with patch('ekpa_scraper.grade_upload.build_plan',side_effect=ValueError('Paging failed')), patch('ekpa_scraper.grade_upload.apply_change') as apply:

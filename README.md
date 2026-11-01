@@ -143,7 +143,7 @@ Cookies, credentials, screenshots and page HTML are not saved as output files.
 python -m unittest discover -s tests -v
 ```
 
-44 local tests pass, covering pending/all links, saved lessons, Greek decimal
+56 local tests pass, covering pending/all links, saved lessons, Greek decimal
 marks, zero grades, CSV migration and notes preservation, duplicates, ZIP
 traversal, and file versions. Authenticated execution must be tested locally.
 
@@ -176,9 +176,9 @@ python ekpa_login.py upload 93 --output "$HOME/Desktop/ekpa_desktop" --apply --k
 ```
 
 Optionally add --lesson-id 557503 to restrict either command to one quiz/test.
-Locally edited rows in indexed CSVs for the selected account are considered.
-Grades equal to the last downloaded moodle_grade with blank notes are skipped
-as unchanged, rather than resubmitted.
+Every indexed CSV row with a nonempty grade or note is checked against the live
+Moodle response. The cached moodle_grade is not used to skip the live check.
+A row is submitted only when the requested value differs from the live value.
 No download is run before upload, so your edited local values are read first.
 
 The uploader reads saved lesson URLs, opens Βαθμολόγηση όλων, and requests
@@ -210,7 +210,7 @@ but verification fails, it is marked unverified_after_submit; inspect Moodle
 before retrying. There are no automatic submission retries or rollback of
 previously verified responses. Successful partial uploads stay saved.
 
-New module: grade_upload.py. The 44 offline tests include grade range and
+New module: grade_upload.py. The 56 offline tests include grade range and
 zero checks, decimal commas, blank-field preservation, remote grade conflicts,
 HTML escaping, unique Save selection, CSV identity mapping, and confirmation
 that preview never calls the apply function. No live grades were changed while
@@ -224,3 +224,20 @@ pagination still cannot locate a requested edit, supply the audit log and the
 paging/settings form HTML (remove session keys). Upload does not download
 student attachments; use download for that. There is no additional student-file
 output from a failed upload preflight.
+
+
+## Upload reports zero updates
+
+The uploader now prints the exact CSV paths it read, file/row counts, blank-row
+counts, rows requiring live checks, and the number of known lessons in scope.
+The audit log includes local_csv_summary, lesson_scope, preflight_completed and
+no_changes events, and already_matches_moodle for verified no-op responses.
+Blank notes never suppress a nonempty grade and never clear Moodle feedback.
+A grade equal to the cached moodle_grade is still checked live; only matching
+live values are considered unchanged. These checks do not bypass identity,
+mark-range, or remote-change conflict protections.
+
+If no changes are submitted, read the printed paths and counts before editing
+or rerunning. A preflight_started event alone was not proof that any response
+had been visited, saved, or verified. The new completion event distinguishes
+zero work from a run that stopped before finishing preflight.

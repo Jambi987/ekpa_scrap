@@ -59,9 +59,10 @@ def notes_html(notes):
     return '<p>' + escape(notes).replace('\r\n', '\n').replace('\n', '<br>') + '</p>'
 
 
-def read_edits(root):
+def read_edits(root, diagnostics=None):
     """Map each CSV row via the saved submission index, not by name alone."""
     changes = []
+    report = {'csv_files': 0, 'csv_rows': 0, 'candidate_rows': 0, 'blank_rows': 0, 'files': []}
     for csv_path in sorted(root.rglob('students.csv')):
         index_path = csv_path.with_name('students_index.jsonl')
         if not index_path.exists():
@@ -70,6 +71,9 @@ def read_edits(root):
         rows = read_rows(csv_path)
         if len(index) != len(rows):
             raise ValueError('CSV and student index row counts differ; no grade upload started.')
+        file_report = {'csv': str(csv_path.relative_to(root)), 'rows': len(rows), 'candidate_rows': 0, 'blank_rows': 0}
+        report['csv_files'] += 1
+        report['csv_rows'] += len(rows)
         used = set()
         for i, record in enumerate(index):
             matches = [j for j, row in enumerate(rows) if row['student_name'] == record['student_name']]
@@ -81,15 +85,19 @@ def read_edits(root):
             grade = row['grade'].strip()
             notes = row['notes'].strip()
             if not grade and not notes:
+                file_report['blank_rows'] += 1
+                report['blank_rows'] += 1
                 continue
             if grade:
                 number(grade)
-            # A populated grade copied during download is not itself an edit.
-            # Do not resubmit it or force a search for an unchanged response.
-            if (not notes and grade and row['moodle_grade'].strip()
-                    and number(grade) == number(row['moodle_grade'])):
-                continue
+            # A cached moodle_grade is only a snapshot. Check every nonempty
+            # requested grade against the live response before deciding no-op.
+            file_report['candidate_rows'] += 1
+            report['candidate_rows'] += 1
             changes.append(Edit(csv_path, j, record['submission_key'], row['student_name'], grade, notes, row['moodle_grade']))
+        report['files'].append(file_report)
+    if diagnostics is not None:
+        diagnostics.update(report)
     return changes
 
 
@@ -170,10 +178,18 @@ def build_plan(page, output, account, lesson_id=None, selectors=SELECTORS):
     root = output_path(output) / account
     if not root.exists() or not any(root.rglob('students.csv')):
         raise ValueError('No student CSVs found for this account. Run download with this output folder first.')
-    all_edits = read_edits(root)
+    diagnostics = {}
+    all_edits = read_edits(root, diagnostics)
+    print(f"Local CSV summary: {diagnostics['csv_files']} files, {diagnostics['csv_rows']} rows, "
+          f"{diagnostics['candidate_rows']} rows to check in Moodle, {diagnostics['blank_rows']} blank rows skipped.")
+    for item in diagnostics['files']:
+        print(f"  CSV: {root / item['csv']} | rows={item['rows']} | live checks={item['candidate_rows']} | blank={item['blank_rows']}")
+    log_event(root, {'status': 'local_csv_summary', **diagnostics})
     lessons = merge_known_lessons(output, account, [])
     if lesson_id:
         lessons = [lesson for lesson in lessons if parse_qs(urlsplit(lesson.url).query).get('id') == [lesson_id]]
+    print(f'Saved lessons in upload scope: {len(lessons)}')
+    log_event(root, {'status': 'lesson_scope', 'saved_lessons': len(lessons), 'lesson_id': lesson_id})
     plan = []
     remaining = set()
     for lesson in lessons:
@@ -212,6 +228,9 @@ def build_plan(page, output, account, lesson_id=None, selectors=SELECTORS):
                 state = snapshot(page, edit.submission_key, selectors)
                 change = make_change(edit, lesson.title, url, *state)
                 remaining.discard((edit.csv_path, edit.submission_key))
+                if not change.update_grade and not change.update_notes:
+                    log_event(root, {'status': 'already_matches_moodle', 'submission_key': edit.submission_key,
+                                     'csv': str(edit.csv_path.relative_to(root)), 'csv_row': edit.row_index + 2})
                 if change.update_grade or change.update_notes:
                     grading_controls(page.locator(selectors.submission).first, url)
                     plan.append(change)
@@ -330,7 +349,12 @@ def upload_grades(page, output, account, apply=False, lesson_id=None):
         log_event(root, {'status': 'preflight_failed', 'error_type': type(exc).__name__,
                          'message': str(exc) if isinstance(exc, ValueError) else 'See terminal error type.'})
         raise
+    log_event(root, {'status': 'preflight_completed', 'proposed_updates': len(plan)})
     print(f'\nProposed response updates: {len(plan)}')
+    if not plan:
+        log_event(root, {'status': 'no_changes', 'submitted_updates': 0})
+        print('No changes submitted. Check the local CSV summary and selected lesson scope above. Blank rows are ignored; matching live values need no save.')
+        return
     for change in plan:
         grade = f'{change.old_grade or "blank"} -> {change.new_grade}' if change.update_grade else 'unchanged'
         print(f'{change.lesson_title} | {change.edit.student_name} | grade: {grade}')
