@@ -24,13 +24,15 @@ def main():
     parser = argparse.ArgumentParser(description='EKPA account login and Grade Me lesson listing')
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('add', help='Register an account in Windows Credential Locker')
-    for name in ('remove', 'login', 'lessons', 'grading', 'download'):
+    for name in ('remove', 'login', 'lessons', 'grading', 'download', 'upload'):
         command = sub.add_parser(name)
         command.add_argument('account', help='Number in profXXlms; preserve leading zeros')
-        if name in ('login', 'lessons', 'grading', 'download'):
+        if name in ('login', 'lessons', 'grading', 'download', 'upload'):
             command.add_argument('--keep-open', action='store_true', help='Keep browser open until Enter')
-    for name in ("lessons", "grading", "download"):
+    for name in ("lessons", "grading", "download", "upload"):
         sub.choices[name].add_argument("--output", default="output", help="Root folder for appended lesson history (default: output)")
+    sub.choices['upload'].add_argument('--apply', action='store_true', help='Submit and verify CSV grades/notes; default is preview only')
+    sub.choices['upload'].add_argument('--lesson-id', help='Limit to one quiz activity ID, e.g. 557503')
     args = parser.parse_args()
     if args.command != 'add' and not re.fullmatch('[0-9]+', args.account):
         parser.error('Account must contain only digits.')
@@ -86,6 +88,14 @@ def main():
                     except Exception as exc:
                         print(f'Download stopped ({type(exc).__name__}). Existing files were preserved.')
                         input('Inspect the browser; press Enter to close... ')
+                        raise
+                if args.command == 'upload':
+                    from .grade_upload import upload_grades
+                    try:
+                        upload_grades(page, args.output, args.account, apply=args.apply, lesson_id=args.lesson_id)
+                    except Exception as exc:
+                        print(f'Grade upload stopped ({type(exc).__name__}). Inspect Moodle and grade_upload_log.jsonl before retrying.')
+                        input('Press Enter to close the browser... ')
                         raise
                 if args.command in ('login', 'grading') or args.keep_open:
                     input('Press Enter to close this browser session... ')

@@ -120,7 +120,8 @@ lastname ordering and 100 responses per page to avoid randomized page overlap. F
 than Moodle's displayed total cause an incomplete-export error. The supplied
 HTML contained no pagination controls, so live paging remains unverified.
 
-No Moodle grades/comments are submitted. Updating CSV grade/notes is local.
+Editing the CSV alone does not change Moodle. Only the upload command with
+--apply submits grades/comments; download and preview do not submit them.
 Cookies, credentials, screenshots and page HTML are not saved as output files.
 
 ## Modules and tests
@@ -142,12 +143,84 @@ Cookies, credentials, screenshots and page HTML are not saved as output files.
 python -m unittest discover -s tests -v
 ```
 
-33 local tests pass, covering pending/all links, saved lessons, Greek decimal
+44 local tests pass, covering pending/all links, saved lessons, Greek decimal
 marks, zero grades, CSV migration and notes preservation, duplicates, ZIP
 traversal, and file versions. Authenticated execution must be tested locally.
 
 Each quiz/test activity is processed independently. If one cannot be read
 (permissions, no grading report, or changed markup), the scan continues with
 other activities and reports incomplete lessons at the end with a nonzero
-exit status. Grades/comments are never submitted. CSVs remain semicolon-
+exit status. Download does not submit grades/comments. CSVs remain semicolon-
 delimited with their existing local grade/notes preservation behavior.
+
+## Upload grades and feedback from CSV
+
+Edit the grade and notes columns of students.csv, then close Excel. Use the
+question's mark scale shown in Moodle (for example, 0 to 20); these are question
+marks, not percentages or the quiz's final total. Decimal comma and decimal
+point are supported. Grade 0 is valid. Leave a field empty to leave its Moodle
+value untouched. A nonempty note replaces that response's teacher feedback.
+The command does not append feedback or clear existing feedback for blank CSV
+notes. The moodle_grade column is a sync snapshot, not the upload input.
+
+Preview (no grading forms submitted):
+
+```bash
+python ekpa_login.py upload 93 --output "$HOME/Desktop/ekpa_desktop" --keep-open
+```
+
+Submit and verify the CSV changes:
+
+```bash
+python ekpa_login.py upload 93 --output "$HOME/Desktop/ekpa_desktop" --apply --keep-open
+```
+
+Optionally add --lesson-id 557503 to restrict either command to one quiz/test.
+Locally edited rows in indexed CSVs for the selected account are considered.
+Grades equal to the last downloaded moodle_grade with blank notes are skipped
+as unchanged, rather than resubmitted.
+No download is run before upload, so your edited local values are read first.
+
+The uploader reads saved lesson URLs, opens Βαθμολόγηση όλων, and requests
+one response per page in stable lastname order, following Moodle-rendered
+pagination links rather than calculating subsequent page numbers from totals. Submission IDs from
+students_index.jsonl determine identity; display names are also cross-checked.
+Unique names can be matched if CSV rows were sorted. Keep the order of rows
+with identical names. Missing submissions, invalid grades, changed remote
+scores since last sync, and ambiguous Save controls stop preflight before any
+submission. The preview lists the old/new grades and notes. Existing unchanged
+responses are skipped.
+
+All proposed changes are checked before applying. Apply then reloads each
+response, checks it has not changed since preflight, and uses the native Moodle
+grading form. The comment editor and backing textarea are synchronized; local
+notes are escaped as plain text. Form destination and quiz ID must match,
+and only a form with one response mark and a unique Save action is accepted.
+If your Moodle markup differs, the command stops and requests form HTML rather
+than guessing. The source HTML supplied so far did not include the Save footer;
+live submission and verification still require local validation.
+
+After each save, the response is reloaded and its actual grade and feedback
+are compared with the requested values. Verified values refresh the CSV sync
+columns, preserving local notes. grade_upload_log.jsonl under the account
+folder is created before preflight and records page observations, early failures,
+preview, submitting and verified/unverified events with before/
+after values (never credentials or session tokens). If submission succeeds
+but verification fails, it is marked unverified_after_submit; inspect Moodle
+before retrying. There are no automatic submission retries or rollback of
+previously verified responses. Successful partial uploads stay saved.
+
+New module: grade_upload.py. The 44 offline tests include grade range and
+zero checks, decimal commas, blank-field preservation, remote grade conflicts,
+HTML escaping, unique Save selection, CSV identity mapping, and confirmation
+that preview never calls the apply function. No live grades were changed while
+building this release.
+
+Upload pagination update: repeated response IDs on navigation links are skipped
+rather than immediately aborting. Missing requested responses still fail
+preflight before any save. The audit log records only a whitelisted set of
+report query parameters and response IDs, not session keys or page HTML. If
+pagination still cannot locate a requested edit, supply the audit log and the
+paging/settings form HTML (remove session keys). Upload does not download
+student attachments; use download for that. There is no additional student-file
+output from a failed upload preflight.
