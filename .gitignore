@@ -49,3 +49,6 @@ students_*.tmp
 
 # Download completion and retry records
 download_history.jsonl
+
+# Lesson scan outcomes
+download_scan_log.jsonl

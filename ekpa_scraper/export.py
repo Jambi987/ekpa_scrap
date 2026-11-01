@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlsplit, urlencode
 from .files import download_upload, filename, download_event
 from .grading import pending_questions_for_lesson, ensure_logged_in, ordered_report_url, validate_report_order
 from .moodle import SELECTORS
-from .storage import lesson_folder, entity_folder
+from .storage import lesson_folder, entity_folder, output_path
 from .submissions import parse_submissions, next_pages
 
 
@@ -78,6 +78,18 @@ def _export_batch(page, lessons, output, account, selectors=SELECTORS):
         seen_lessons.add(lesson.url)
         print(f'\nDownloading lesson: {lesson.title}')
         questions = pending_questions_for_lesson(page, lesson, selectors, include_all=True)
+        if not questions:
+            print('  Skipped: no manual-grading responses are available in this lesson.')
+            account_root = output_path(output) / account
+            account_root.mkdir(parents=True, exist_ok=True)
+            with (account_root / 'download_scan_log.jsonl').open('a', encoding='utf-8') as stream:
+                stream.write(json.dumps({
+                    'time_utc': datetime.now(timezone.utc).isoformat(),
+                    'status': 'lesson_skipped_no_manual_responses',
+                    'lesson_id': parse_qs(urlsplit(lesson.url).query).get('id', [''])[0],
+                    'lesson_title': lesson.title,
+                }, ensure_ascii=False) + '\n')
+            continue
         root = lesson_folder(output, account, lesson)
         for question in questions:
             params = parse_qs(urlsplit(question.url).query)

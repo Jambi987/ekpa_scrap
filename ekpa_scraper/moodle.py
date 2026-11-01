@@ -22,6 +22,8 @@ class MoodleSelectors:
     results_link: str = 'li[data-key="quiz_report"] a[href*="/mod/quiz/report.php"]'
     report_dropdown: str = 'select[name="jump"]:has(option[value*="mode=grading"])'
     question_table: str = 'table#questionstograde'
+    grading_toggle: str = '.toggleincludeauto'
+    grading_empty_notice: str = '.toggleincludeauto + .alert-info'
     question_name: str = 'td.c2'
     pending_column_title: str = 'Προς βαθμολόγηση'
     total_column_title: str = 'Σύνολο'

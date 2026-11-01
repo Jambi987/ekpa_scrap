@@ -64,9 +64,43 @@ def validate_report_order(html, selectors=SELECTORS):
         raise MoodleLayoutError('Moodle returned random response ordering, which disables pagination. Check the grading_order adapter value against the report Order attempts by options. No grade upload was started.')
     return value
 
+def is_empty_grading_report(html, selectors=SELECTORS, quiz_id=None):
+    """Recognize Moodle's empty manual-report renderer, independent of language.
+
+    Moodle renders a show-auto toggle immediately followed by an info notice
+    instead of the questions table when no manual response rows are available.
+    A missing table or arbitrary notification alone is never evidence of empty.
+    """
+    soup = BeautifulSoup(html, 'html.parser')
+    region = soup.select_one('#region-main') or soup.select_one('main')
+    if region is None or soup.select_one(selectors.login_form):
+        return False
+    if region.select_one('table, .alert-danger, .errorbox, [data-rel="fatalerror"]'):
+        return False
+    if region.select_one(selectors.submission):
+        return False
+    toggles = region.select(selectors.grading_toggle)
+    notices = region.select(selectors.grading_empty_notice)
+    if len(toggles) != 1 or len(notices) != 1 or not notices[0].get_text(' ', strip=True):
+        return False
+    links = toggles[0].select('a[href]')
+    if len(links) != 1:
+        return False
+    try:
+        url = checked_report_url(links[0]['href'], quiz_id=quiz_id)
+    except MoodleLayoutError:
+        return False
+    params = parse_qs(urlsplit(url).query)
+    return (params.get('mode') == ['grading'] and params.get('includeauto') == ['1']
+            and len(params.get('id', [])) == 1 and params['id'][0].isdigit()
+            and not any(key in params for key in ('slot', 'qid', 'grade')))
+
+
 def parse_pending_questions(html, selectors=SELECTORS, quiz_id=None, include_all=False):
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.select(selectors.question_table)
+    if not tables and is_empty_grading_report(html, selectors, quiz_id):
+        return []
     if len(tables) != 1:
         raise MoodleLayoutError('Expected the manual-grading question table. Check question_table in moodle.py.')
     table = tables[0]
@@ -153,9 +187,9 @@ def pending_questions_for_lesson(page, lesson, selectors=SELECTORS, include_all=
     if current.get('mode') != ['grading'] or current.get('id') != [quiz_id]:
         raise MoodleLayoutError('Moodle did not open manual grading for this lesson.')
     try:
-        page.locator(selectors.question_table).wait_for(state='attached', timeout=30000)
+        page.locator(selectors.question_table + ', ' + selectors.grading_empty_notice).first.wait_for(state='attached', timeout=30000)
     except Exception:
-        raise MoodleLayoutError('Manual grading opened, but the question table did not load. Inspect the browser for a message or changed layout.') from None
+        raise MoodleLayoutError('Manual grading opened, but neither the question table nor a recognized empty-report notice loaded. Check the page for a permission message or changed layout.') from None
     ensure_logged_in(page, selectors)
     return parse_pending_questions(page.content(), selectors, quiz_id, include_all=include_all)
 

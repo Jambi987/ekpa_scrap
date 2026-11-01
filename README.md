@@ -301,3 +301,12 @@ Only edit `students.csv`, in its `grade` and optional `notes` columns.
 `students.before_sync.csv` is a one-time recovery snapshot created before the first
 replacement of an existing CSV; it may contain only the first student. It is not a
 current backup and is never used for uploads. Save and close Excel before running.
+
+
+## Quizzes without manual-grading responses
+
+Download recognizes Moodle's empty manual-grading report and skips that lesson,
+recording the outcome in the account's `download_scan_log.jsonl`. Missing tables
+without a recognized empty report still produce an error. Text-only essay
+responses keep their CSV entries even when no attachments exist.
+See [skipping lessons](docs/SKIPPING_LESSONS.md) for detection, logs and limits.
