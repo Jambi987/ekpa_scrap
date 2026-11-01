@@ -143,7 +143,7 @@ Cookies, credentials, screenshots and page HTML are not saved as output files.
 python -m unittest discover -s tests -v
 ```
 
-56 local tests pass, covering pending/all links, saved lessons, Greek decimal
+61 local tests pass, covering pending/all links, saved lessons, Greek decimal
 marks, zero grades, CSV migration and notes preservation, duplicates, ZIP
 traversal, and file versions. Authenticated execution must be tested locally.
 
@@ -210,7 +210,7 @@ but verification fails, it is marked unverified_after_submit; inspect Moodle
 before retrying. There are no automatic submission retries or rollback of
 previously verified responses. Successful partial uploads stay saved.
 
-New module: grade_upload.py. The 56 offline tests include grade range and
+New module: grade_upload.py. The 61 offline tests include grade range and
 zero checks, decimal commas, blank-field preservation, remote grade conflicts,
 HTML escaping, unique Save selection, CSV identity mapping, and confirmation
 that preview never calls the apply function. No live grades were changed while
@@ -241,3 +241,9 @@ If no changes are submitted, read the printed paths and counts before editing
 or rerunning. A preflight_started event alone was not proof that any response
 had been visited, saved, or verified. The new completion event distinguishes
 zero work from a run that stopped before finishing preflight.
+
+The grading report requests now use Moodle's real sorting option value
+studentlastname. The previous lastname value was invalid in Moodle 4.5 and
+silently selected random ordering, which suppresses paging. See
+TROUBLESHOOTING.md for source references and the seven-response paging
+regression. The rendered ordering is checked before response processing.

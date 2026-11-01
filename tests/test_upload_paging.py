@@ -26,7 +26,7 @@ class UploadPagingTests(unittest.TestCase):
         start=response_url(url,0)
         # Link intentionally uses an extra Moodle report parameter and page 7;
         # the iterator must follow it rather than inventing pages 1..total.
-        actual=url+'&pagesize=1&page=7&order=lastname&includeauto=0'
+        actual=url+'&pagesize=1&page=7&order=studentlastname&includeauto=0'
         html=HTML+f'<div class="paging"><a href="{actual}">Next</a></div>'
         page=FakePage({start:html,actual:html})
         with tempfile.TemporaryDirectory() as root:

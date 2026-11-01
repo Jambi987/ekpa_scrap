@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 from bs4 import BeautifulSoup
 from .csv_store import read_rows, sync_row, write_rows
-from .grading import pending_questions_for_lesson, ensure_logged_in, normalized
+from .grading import pending_questions_for_lesson, ensure_logged_in, normalized, ordered_report_url, validate_report_order
 from .moodle import ORIGIN, SELECTORS, MoodleLayoutError
 from .storage import merge_known_lessons, output_path, lesson_folder
 from .submissions import parse_submissions, next_pages
@@ -138,18 +138,19 @@ def make_change(edit, lesson_title, url, submission, old_grade, old_notes, minim
                   edit.notes if edit.notes else old_notes, update_grade, update_notes)
 
 
-def response_url(url, page_number):
+def response_url(url, page_number, selectors=SELECTORS):
     parts = urlsplit(url)
     args = parse_qs(parts.query)
-    args.update(grade=['all'], pagesize=['1'], page=[str(page_number)], order=['lastname'])
-    return parts._replace(query=urlencode([(k, v) for k, values in args.items() for v in values])).geturl()
+    args.update(grade=['all'])
+    all_url = parts._replace(query=urlencode([(k, v) for k, values in args.items() for v in values])).geturl()
+    return ordered_report_url(all_url, pagesize=1, page=page_number, selectors=selectors)
 
 
 
 def response_pages(page, question, root, selectors=SELECTORS):
     """Follow rendered Moodle paging links; never infer page indexes from totals."""
     from .export import page_key
-    queue = [response_url(question.url, 0)]
+    queue = [response_url(question.url, 0, selectors)]
     visited = set()
     while queue:
         requested = queue.pop(0)
@@ -163,6 +164,7 @@ def response_pages(page, question, root, selectors=SELECTORS):
         ensure_logged_in(page, selectors)
         page.locator(selectors.submission).first.wait_for(state='attached', timeout=30000)
         html = page.content()
+        effective_order = validate_report_order(html, selectors)
         submissions = parse_submissions(html, selectors)
         links = next_pages(html, page.url, selectors)
         queue.extend(url for url in links if page_key(url) not in visited)
@@ -171,7 +173,7 @@ def response_pages(page, question, root, selectors=SELECTORS):
                       if key in {'id', 'mode', 'grade', 'slot', 'qid', 'page', 'pagesize', 'order'}}
         log_event(root, {'status': 'page_observed', 'query': safe_query,
                          'response_keys': [s.key for s in submissions],
-                         'rendered_paging_links': len(links)})
+                         'rendered_paging_links': len(links), 'effective_order': effective_order})
         yield requested, submissions
 
 def build_plan(page, output, account, lesson_id=None, selectors=SELECTORS):
