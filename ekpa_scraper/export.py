@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit, urlencode
 from .files import download_upload, filename
-from .grading import pending_questions_for_lesson, ensure_logged_in
+from .grading import pending_questions_for_lesson, ensure_logged_in, ordered_report_url, validate_report_order
 from .moodle import SELECTORS
 from .storage import lesson_folder, entity_folder
 from .submissions import parse_submissions, next_pages
@@ -91,12 +91,8 @@ def _export_batch(page, lessons, output, account, selectors=SELECTORS):
             use_root = slot in existing_slots or (len(questions) == 1 and not existing_test and not existing_slots)
             test_root = root if use_root else entity_folder(root, 'test', test_key, question.title)
             tab = page.context.new_page()
-            def stable_url(url):
-                parts = urlsplit(url)
-                args = parse_qs(parts.query)
-                args.update(order=['lastname'], pagesize=['100'], page=['0'])
-                return parts._replace(query=urlencode([(k, v) for k, values in args.items() for v in values])).geturl()
-            queue = [stable_url(url) for url in (question.graded_url, question.ungraded_url, question.url) if url]
+            queue = [ordered_report_url(url, selectors=selectors)
+                     for url in (question.graded_url, question.ungraded_url, question.url) if url]
             visited = set()
             seen_submissions = set()
             try:
@@ -112,6 +108,7 @@ def _export_batch(page, lessons, output, account, selectors=SELECTORS):
                     ensure_logged_in(tab, selectors)
                     tab.locator(selectors.submission).first.wait_for(state='attached', timeout=30000)
                     html = tab.content()
+                    validate_report_order(html, selectors)
                     state_filter = parse_qs(urlsplit(tab.url).query).get('grade', [''])[0]
                     for submission in parse_submissions(html, selectors):
                         if state_filter in ('manuallygraded', 'needsgrading'):

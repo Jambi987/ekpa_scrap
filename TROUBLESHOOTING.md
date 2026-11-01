@@ -47,3 +47,22 @@ your authenticated page. If it still finds no quizzes, supply the main-content
 HTML from one printed quiz index URL, removing any session keys. A site-specific
 course format may require a different adapter; course-page fallback by itself
 cannot prove that lazily loaded or separately paged sections were all scanned.
+
+# Only the first response is found in each quiz
+
+The grading report order parameter must be the option VALUE studentlastname,
+not the label lastname. Moodle 4.5 validates against random, date,
+studentfirstname and studentlastname (plus permitted identity fields). An
+unrecognized value falls back to random; random ordering forces page zero
+and suppresses the pagination bar. That can cause repeated first attempts
+or most CSV response IDs not being found.
+
+Report URLs now share one builder using the adapter value in moodle.py.
+The rendered order selector is checked before processing responses. Random
+ordering is reported as an error instead of attempting an incomplete scan.
+The regression test models Moodle's validation and traverses seven single-
+response pages. Identity checks and preflight-before-save remain in place.
+
+Source inspected:
+https://github.com/moodle/moodle/blob/MOODLE_405_STABLE/mod/quiz/report/grading/report.php
+https://github.com/moodle/moodle/blob/MOODLE_405_STABLE/mod/quiz/report/grading/renderer.php

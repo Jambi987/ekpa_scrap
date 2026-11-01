@@ -5,7 +5,7 @@ Only opens pending-grading pages. Never fills, submits, or saves grading forms.
 from dataclasses import dataclass
 import unicodedata
 import re
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit, urlencode
 from bs4 import BeautifulSoup
 from .moodle import ORIGIN, SELECTORS, MoodleLayoutError
 
@@ -37,6 +37,32 @@ def checked_report_url(href, *, quiz_id=None, pending=False):
         raise MoodleLayoutError('Pending column contains an unexpected grading link; navigation stopped.')
     return url
 
+
+
+def ordered_report_url(url, pagesize=100, page=0, selectors=SELECTORS):
+    """Use Moodle's actual report option value, not its human-readable label."""
+    url = checked_report_url(url)
+    parts = urlsplit(url)
+    args = parse_qs(parts.query)
+    if args.get('mode') != ['grading']:
+        raise MoodleLayoutError('Expected a manual-grading report URL.')
+    args.update(order=[selectors.grading_order], pagesize=[str(pagesize)], page=[str(page)])
+    return parts._replace(query=urlencode([(k, v) for k, values in args.items() for v in values])).geturl()
+
+
+def validate_report_order(html, selectors=SELECTORS):
+    """Moodle silently resets unknown order values to random and hides paging."""
+    soup = BeautifulSoup(html, 'html.parser')
+    dropdown = soup.select_one(selectors.report_order_select)
+    if dropdown is None:
+        return None
+    selected = dropdown.select_one('option[selected]') or dropdown.select_one('option')
+    if selected is None:
+        raise MoodleLayoutError('The grading order selector has no options.')
+    value = selected.get('value', '')
+    if not value or value == 'random':
+        raise MoodleLayoutError('Moodle returned random response ordering, which disables pagination. Check the grading_order adapter value against the report Order attempts by options. No grade upload was started.')
+    return value
 
 def parse_pending_questions(html, selectors=SELECTORS, quiz_id=None, include_all=False):
     soup = BeautifulSoup(html, 'html.parser')

@@ -30,6 +30,8 @@ class MoodleSelectors:
     exercise_text: str = '.qtext'
     attachment_links: str = '.attachments a[href]'
     paging_links: str = '.paging a[href], .pagination a[href]'
+    grading_order: str = 'studentlastname'
+    report_order_select: str = 'select[name="order"]'
 
 SELECTORS = MoodleSelectors()
 
